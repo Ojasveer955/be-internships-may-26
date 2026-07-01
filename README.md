@@ -2,6 +2,14 @@
 
 Build a minimal production-leaning service that can **handle load**, **rate limit**, and **avoid duplicates** via idempotency.
 
+## Setup
+```bash
+npm install
+cp .env.example .env   # adjust API_KEY if needed
+npm run dev             # starts on :8080
+npm test                # runs all tests
+```
+
 ## Endpoints (to keep)
 - `POST /v1/signals`
   - body: `{ "userId": "string", "type": "string", "payload": "string" }`
@@ -11,6 +19,22 @@ Build a minimal production-leaning service that can **handle load**, **rate limi
     - **Idempotency**: same `Idempotency-Key` should not create duplicates.
 - `GET /v1/signals?userId=...&limit=...`
 - `GET /healthz`
+
+## Implementation Notes
+
+### Rate Limiting (`src/rateLimit.js`)
+Token bucket algorithm — each user gets `RATE_LIMIT_PER_MIN` tokens that refill continuously over a 60s window. Unlike a fixed-window counter, this handles bursts smoothly and doesn't allow double the rate at window boundaries.
+
+**Multi-instance safety:** Within a single Node.js process, the synchronous `checkAndConsume` call is inherently race-free (no async gaps between check and decrement). For multiple instances behind a load balancer, the in-memory map would need to be replaced with a shared store like Redis using an atomic Lua script. See `SCALE.md` for the full approach.
+
+### Idempotency (`src/signals.js`)
+Uses an insert-first strategy relying on the `UNIQUE` constraint on `idempotency_key` in SQLite. If a duplicate key is inserted, the DB throws `SQLITE_CONSTRAINT_UNIQUE` and we fetch the existing record. This avoids the check-then-insert race that occurs under concurrent requests.
+
+### DB Failure Handling (`src/signals.js`)
+All DB calls go through a `withRetry` wrapper that catches `SQLITE_BUSY` errors and retries with exponential backoff + random jitter (up to 3 retries). This prevents thundering herd retries and handles transient failures from `DB_FAIL_RATE`.
+
+### App Architecture (`src/server.js`)
+The server exports a `buildApp()` factory for programmatic testing via `app.inject()`. It only auto-listens when run directly (`node src/server.js`).
 
 ## Your Tasks
 1. **Implement a robust rate limiter** in `src/rateLimit.js`.
